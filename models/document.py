@@ -46,15 +46,88 @@ class Checkbox:
     """
     Represents one detected checkbox.
     """
+    label: str = ""
+    group: str = ""
+    value: str = ""
+    selected: bool = False
+    checked: bool = False
+    confidence: float = 0.0
+    bbox: list[int] = field(default_factory=list)
+    mark_type: str = "unknown"
+    fill_ratio: float = 0.0
+    area: float = 0.0
+    aspect_ratio: float = 1.0
+    perimeter: float = 0.0
+    
+    connected_components: int = 0
+    
+    border_complete: bool = True
+    
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    label: str
+    def add_metadata(
+        self,
+        key: str,
+        value: Any,
+    ) -> None:
+        self.metadata[key] = value
 
-    checked: bool
+@dataclass(slots=True)
+class ExtractedField:
+    """
+    Represents one extracted semantic field.
+    """
 
-    confidence: float
+    name: str
 
-    bbox: list[int]
+    value: Any
 
+    confidence: float = 1.0
+
+    source: str = "unknown"
+
+    page_number: int = 0
+
+    bbox: list[int] | None = None
+
+    metadata: dict[str, Any] = field(default_factory=dict)
+    
+@dataclass(slots=True)
+class MappedField:
+    """
+    Final normalized field ready for export.
+    """
+
+    canonical_name: str
+
+    value: str
+
+    confidence: float = 1.0
+
+    source: str = "unknown"
+
+    page_number: int = 0
+
+    original_value: str = ""
+
+    validated: bool = False
+
+    validation_errors: list[str] = field(default_factory=list)
+
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def add_error(
+        self,
+        error: str,
+    ) -> None:
+        self.validation_errors.append(error)
+
+    def add_metadata(
+        self,
+        key: str,
+        value: Any,
+    ) -> None:
+        self.metadata[key] = value
 
 @dataclass(slots=True)
 class Page:
@@ -78,7 +151,7 @@ class Page:
 
     checkboxes: list[Checkbox] = field(default_factory=list)
 
-    extracted_fields: dict[str, Any] = field(default_factory=dict)
+    extracted_fields: list[ExtractedField] = field(default_factory=list)
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -91,8 +164,8 @@ class Page:
     def add_checkbox(self, checkbox: Checkbox) -> None:
         self.checkboxes.append(checkbox)
 
-    def add_field(self, key: str, value: Any) -> None:
-        self.extracted_fields[key] = value
+    def add_field(self, field: ExtractedField) -> None:
+        self.extracted_fields.append(field)
 
     def add_metadata(self, key: str, value: Any) -> None:
         self.metadata[key] = value
