@@ -54,8 +54,9 @@ class OCRService:
 
         try:
 
-            result = self.ocr.predict(
-                str(image_path)
+            result = self.ocr.ocr(
+                str(image_path),
+                cls=False,
             )
 
             self._parse_result(
@@ -78,50 +79,28 @@ class OCRService:
         result,
     ) -> None:
 
-        if not result:
+        if not result or not result[0]:
             return
+        
+        for line in result[0]:
+            
+            bbox = line[0]
+            text = line[1][0]
+            score = line[1][1]
 
-        for page_result in result:
+            if not text:
+                continue
 
-            boxes = page_result.get(
-                "rec_boxes",
-                []
-            )
-
-            texts = page_result.get(
-                "rec_texts",
-                []
-            )
-
-            scores = page_result.get(
-                "rec_scores",
-                []
-            )
-
-            for bbox, text, score in zip(
-                boxes,
-                texts,
-                scores,
-            ):
-
-                if not text:
-                    continue
-
-                word = OCRWord(
+            word = OCRWord(
                     text=text.strip(),
                     confidence=float(score),
-                    bbox=bbox.tolist()
-                    if hasattr(
-                        bbox,
-                        "tolist",
-                    )
-                    else bbox,
+                    bbox=bbox,
                     source="printed",
-                )
+            )
 
-                page.add_ocr_word(
-                    word
-                )
+            page.add_ocr_word(
+                word
+            )
 
         app_logger.info(
             f"Page {page.page_number}: "

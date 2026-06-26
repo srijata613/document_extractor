@@ -209,7 +209,7 @@ class DocumentPipeline:
         document: Document,
     ) -> None:
 
-        preprocess_service.process_document(
+        preprocess_service.preprocess_document(
             document
         )
 

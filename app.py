@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from config.settings import settings
 from routes.upload import upload_router
 from utils.logger import app_logger
 from schemas.api import (

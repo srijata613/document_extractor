@@ -31,8 +31,70 @@ class DocumentParser:
     LINE_TOLERANCE = 20
 
     def __init__(self) -> None:
-
         self.field_aliases = self._build_aliases()
+
+    def _build_aliases(self) -> dict[str, list[str]]:
+        """
+        Build canonical field aliases for fuzzy label matching.
+        """
+
+        return {
+            "name": [
+                "name",
+                "full name",
+                "patient name",
+                "employee name",
+                "applicant name",
+            ],
+            "date": [
+                "date",
+                "date of birth",
+                "dob",
+                "birth date",
+            ],
+            "age": [
+                "age",
+                "patient age",
+            ],
+            "gender": [
+                "gender",
+                "sex",
+            ],
+            "address": [
+                "address",
+                "residential address",
+                "home address",
+                "mailing address",
+            ],
+            "phone": [
+                "phone",
+                "phone number",
+                "mobile",
+                "mobile number",
+                "contact number",
+            ],
+            "email": [
+                "email",
+                "email address",
+            ],
+            "occupation": [
+                "occupation",
+                "profession",
+                "job",
+            ],
+            "company": [
+                "company",
+                "organization",
+                "employer",
+            ],
+            "nationality": [
+                "nationality",
+            ],
+            "signature": [
+                "signature",
+                "signed by",
+            ],
+        }
 
     def parse_document(
         self,

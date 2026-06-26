@@ -41,7 +41,20 @@ class PreprocessService:
         Save
     """
 
-    def preprocess_document(self, document: Document) -> Document:
+    def process_document(
+        self,
+        document: Document,
+    ) -> Document:
+        """
+        Standard pipeline entry point.
+        Keeps the interface consistent with the other services.
+        """
+        return self.preprocess_document(document)
+
+    def preprocess_document(
+        self,
+        document: Document,
+    ) -> Document:
 
         app_logger.info(
             f"Preprocessing {document.total_pages} pages..."
@@ -50,7 +63,9 @@ class PreprocessService:
         for page in document.pages:
             self.preprocess_page(page)
 
-        app_logger.success("Preprocessing completed.")
+        app_logger.success(
+            "Preprocessing completed."
+        )
 
         return document
 

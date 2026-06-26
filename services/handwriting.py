@@ -1,16 +1,21 @@
 from __future__ import annotations
 
-from typing import List
+from dataclasses import dataclass
+from typing import Iterable
 
 import cv2
+import numpy as np
 import torch
-from PIL import Image
 from transformers import (
     TrOCRProcessor,
     VisionEncoderDecoderModel,
 )
 
-from models.document import Document, OCRWord, Page
+from models.document import (
+    Document,
+    OCRWord,
+    Page,
+)
 from services.model_manager import model_manager
 from utils.image_utils import image_utils
 from utils.logger import app_logger
@@ -20,10 +25,65 @@ class HandwritingRecognitionError(Exception):
     """Raised when handwriting recognition fails."""
 
 
+@dataclass(slots=True)
+class HandwritingRegion:
+    """
+    Candidate handwriting region before OCR.
+    """
+
+    image: np.ndarray
+    bbox: list[list[int]]
+
+    ocr_confidence: float
+
+    trocr_confidence: float = 0.0
+
+    text: str = ""
+
+
 class HandwritingService:
     """
-    Handwritten text recognition using Microsoft's TrOCR.
+    Production handwriting recognition service.
+
+    Pipeline
+
+        OCR Results
+              ↓
+        Candidate Detection
+              ↓
+        Region Merge
+              ↓
+        TrOCR Recognition
+              ↓
+        Confidence Fusion
+              ↓
+        Duplicate Removal
+              ↓
+        OCRWord Export
     """
+
+    # Ignore tiny regions
+
+    MIN_WIDTH = 45
+    MIN_HEIGHT = 18
+
+    # Ignore regions larger than page
+
+    MAX_WIDTH_RATIO = 0.90
+
+    # OCR confidence below this
+    # becomes handwriting candidate
+
+    LOW_CONFIDENCE = 0.70
+
+    # Merge nearby regions
+
+    MERGE_X_GAP = 30
+    MERGE_Y_GAP = 18
+
+    # Batch size for TrOCR
+
+    BATCH_SIZE = 8
 
     def __init__(self) -> None:
 
@@ -41,6 +101,11 @@ class HandwritingService:
             else "cpu"
         )
 
+        if (
+            next(self.model.parameters()).device.type
+            != self.device
+        ):
+            self.model.to(self.device)
 
     def process_document(
         self,
@@ -52,6 +117,7 @@ class HandwritingService:
         )
 
         for page in document.pages:
+
             self.process_page(page)
 
         app_logger.success(
@@ -59,7 +125,6 @@ class HandwritingService:
         )
 
         return document
-
 
     def process_page(
         self,
@@ -78,31 +143,34 @@ class HandwritingService:
                 image_path
             )
 
-            crops = self._extract_candidate_regions(
-                image
+            regions = self._collect_candidate_regions(
+                page,
+                image,
             )
 
-            for crop, bbox in crops:
+            if not regions:
 
-                text = self._recognize_crop(
-                    crop
+                app_logger.info(
+                    f"Page {page.page_number}: "
+                    "no handwriting candidates."
                 )
 
-                if not text:
-                    continue
+                return
 
-                page.add_handwriting_word(
-                    OCRWord(
-                        text=text,
-                        confidence=1.0,
-                        bbox=bbox,
-                        source="handwritten",
-                    )
-                )
+            regions = self._merge_regions(
+                regions,
+            )
+
+            self._recognize_regions(
+                page,
+                image,
+                regions,
+            )
 
             app_logger.info(
                 f"Page {page.page_number}: "
-                f"{len(page.handwriting_words)} handwritten words."
+                f"{len(page.handwriting_words)} "
+                "handwriting regions recognized."
             )
 
         except Exception as exc:
@@ -115,160 +183,283 @@ class HandwritingService:
             ) from exc
 
 
-    def _recognize_crop(
+    def _collect_candidate_regions(
         self,
-        crop,
-    ) -> str:
+        page: Page,
+        image: np.ndarray,
+    ) -> list[HandwritingRegion]:
 
-        pil = image_utils.cv_to_pil(crop)
+        candidates: list[
+            HandwritingRegion
+        ] = []
 
-        pixel_values = self.processor(
-            images=pil,
-            return_tensors="pt",
-        ).pixel_values
+        if not page.ocr_words:
+            return candidates
 
-        pixel_values = pixel_values.to(
-            self.device
-        )
+        for word in page.ocr_words:
 
-        with torch.no_grad():
-
-            generated_ids = (
-                self.model.generate(
-                    pixel_values
-                )
-            )
-
-        text = self.processor.batch_decode(
-            generated_ids,
-            skip_special_tokens=True,
-        )[0]
-
-        return text.strip()
-
-
-    def _extract_candidate_regions(
-        self,
-        image,
-    ) -> List[tuple]:
-
-        gray = image_utils.to_gray(image)
-
-        thresh = cv2.adaptiveThreshold(
-            gray,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            25,
-            12,
-        )
-
-        kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT,
-            (5, 3),
-        )
-
-        thresh = cv2.dilate(
-            thresh,
-            kernel,
-            iterations=1,
-        )
-
-        contours, _ = cv2.findContours(
-            thresh,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE,
-        )
-
-        candidates = []
-
-        for contour in contours:
-
-            x, y, w, h = cv2.boundingRect(
-                contour
-            )
-
-            if w < 25 or h < 12:
+            if word.confidence >= self.LOW_CONFIDENCE:
                 continue
 
-            if w > image.shape[1] * 0.95:
+            x1 = int(min(p[0] for p in word.bbox))
+            y1 = int(min(p[1] for p in word.bbox))
+
+            x2 = int(max(p[0] for p in word.bbox))
+            y2 = int(max(p[1] for p in word.bbox))
+
+            width = x2 - x1
+            height = y2 - y1
+
+            if width < self.MIN_WIDTH:
                 continue
+
+            if height < self.MIN_HEIGHT:
+                continue
+
+            if width > (
+                image.shape[1]
+                * self.MAX_WIDTH_RATIO
+            ):
+                continue
+
+            pad = 8
+
+            x1 = max(0, x1 - pad)
+            y1 = max(0, y1 - pad)
+
+            x2 = min(
+                image.shape[1],
+                x2 + pad,
+            )
+
+            y2 = min(
+                image.shape[0],
+                y2 + pad,
+            )
 
             crop = image[
-                y : y + h,
-                x : x + w,
-            ]
-
-            bbox = [
-                [x, y],
-                [x + w, y],
-                [x + w, y + h],
-                [x, y + h],
+                y1:y2,
+                x1:x2,
             ]
 
             candidates.append(
-                (
-                    crop,
-                    bbox,
+                HandwritingRegion(
+                    image=np.empty((0, 0), dtype=np.uint8),
+                    bbox=[
+                        [x1, y1],
+                        [x2, y1],
+                        [x2, y2],
+                        [x1, y2],
+                    ],
+                    ocr_confidence=word.confidence,
                 )
             )
 
-        candidates.sort(
-            key=lambda c: (
-                c[1][0][1],
-                c[1][0][0],
+        return candidates
+
+
+    def _merge_regions(
+        self,
+        regions: list[
+            HandwritingRegion
+        ],
+    ) -> list[
+        HandwritingRegion
+    ]:
+
+        if len(regions) <= 1:
+            return regions
+
+        regions.sort(
+            key=lambda r: (
+                r.bbox[0][1],
+                r.bbox[0][0],
             )
         )
 
-        return candidates
-    
+        merged = [
+            regions[0]
+        ]
 
-    @staticmethod
-    def remove_duplicates(
+        for region in regions[1:]:
+
+            previous = merged[-1]
+
+            prev_right = previous.bbox[1][0]
+            curr_left = region.bbox[0][0]
+
+            prev_y = previous.bbox[0][1]
+            curr_y = region.bbox[0][1]
+
+            if (
+                abs(prev_y - curr_y)
+                <= self.MERGE_Y_GAP
+                and
+                curr_left - prev_right
+                <= self.MERGE_X_GAP
+            ):
+
+                x1 = min(
+                    previous.bbox[0][0],
+                    region.bbox[0][0],
+                )
+
+                y1 = min(
+                    previous.bbox[0][1],
+                    region.bbox[0][1],
+                )
+
+                x2 = max(
+                    previous.bbox[2][0],
+                    region.bbox[2][0],
+                )
+
+                y2 = max(
+                    previous.bbox[2][1],
+                    region.bbox[2][1],
+                )
+
+                previous.bbox = [
+                    [x1, y1],
+                    [x2, y1],
+                    [x2, y2],
+                    [x1, y2],
+                ]
+
+                previous.ocr_confidence = min(
+                    previous.ocr_confidence,
+                    region.ocr_confidence,
+                )
+
+            else:
+
+                merged.append(
+                    region
+                )
+
+        return merged
+
+    def _recognize_regions(
+        self,
         page: Page,
-        iou_threshold: float = 0.50,
+        image: np.ndarray,
+        regions: list[HandwritingRegion],
     ) -> None:
-        """
-        Remove duplicate handwritten detections using IoU.
-        """
 
-        if len(page.handwriting_words) <= 1:
+        if not regions:
             return
 
-        filtered: list[OCRWord] = []
+        self._recrop_regions(
+            image,
+            regions,
+        )
 
-        for word in sorted(
-            page.handwriting_words,
-            key=lambda w: w.confidence,
-            reverse=True,
+        for start in range(
+            0,
+            len(regions),
+            self.BATCH_SIZE,
         ):
 
-            duplicate = False
+            batch = regions[
+                start:start + self.BATCH_SIZE
+            ]
 
-            for existing in filtered:
+            images = [
+                image_utils.cv_to_pil(
+                    region.image
+                )
+                for region in batch
+            ]
 
-                if (
-                    HandwritingService._iou(
-                        word.bbox,
-                        existing.bbox,
+            pixel_values = self.processor(
+                images=images,
+                return_tensors="pt",
+                padding=True,
+            ).pixel_values.to(
+                self.device
+            )
+
+            with torch.no_grad():
+
+                generated = self.model.generate(
+                    pixel_values,
+                    max_new_tokens=64,
+                )
+
+            texts = self.processor.batch_decode(
+                generated,
+                skip_special_tokens=True,
+            )
+
+            for region, text in zip(
+                batch,
+                texts,
+            ):
+
+                region.text = text.strip()
+
+                region.trocr_confidence = (
+                    self.estimate_confidence(
+                        region.text
                     )
-                    >= iou_threshold
-                ):
-                    duplicate = True
-                    break
+                )
 
-            if not duplicate:
-                filtered.append(word)
+                if not region.text:
+                    continue
 
-        page.handwriting_words = filtered
+                page.add_handwriting_word(
+                    OCRWord(
+                        text=region.text,
+                        confidence=max(
+                            region.trocr_confidence,
+                            region.ocr_confidence,
+                        ),
+                        bbox=region.bbox,
+                        source="handwritten",
+                    )
+                )
 
+    def _recrop_regions(
+        self,
+        image: np.ndarray,
+        regions: list[HandwritingRegion],
+    ) -> None:
+
+        height, width = image.shape[:2]
+
+        for region in regions:
+
+            x1 = max(
+                0,
+                region.bbox[0][0],
+            )
+
+            y1 = max(
+                0,
+                region.bbox[0][1],
+            )
+
+            x2 = min(
+                width,
+                region.bbox[2][0],
+            )
+
+            y2 = min(
+                height,
+                region.bbox[2][1],
+            )
+
+            region.image = image[
+                y1:y2,
+                x1:x2,
+            ]
 
     @staticmethod
     def estimate_confidence(
         text: str,
     ) -> float:
         """
-        Simple confidence estimation for TrOCR output.
+        Estimate confidence from TrOCR output quality.
         """
 
         if not text:
@@ -276,53 +467,75 @@ class HandwritingService:
 
         score = 1.0
 
-        if len(text) < 2:
-            score -= 0.30
+        length = len(text)
 
-        if text.count("?") > 0:
-            score -= 0.20
+        if length <= 1:
+            score -= 0.45
+        elif length <= 3:
+            score -= 0.15
 
-        if any(ch in "@#$%^&*" for ch in text):
-            score -= 0.20
+        invalid = sum(
+            c in "@#$%^&*{}[]<>"
+            for c in text
+        )
 
-        return max(score, 0.10)
+        score -= invalid * 0.08
+
+        question = text.count("?")
+
+        score -= question * 0.05
+
+        return max(0.10, min(score, 1.0))
 
 
     def postprocess_page(
         self,
         page: Page,
     ) -> None:
-        """
-        Clean handwriting results.
-        """
 
         cleaned: list[OCRWord] = []
 
         for word in page.handwriting_words:
 
-            word.text = " ".join(
-                word.text.split()
-            ).strip()
-
-            word.confidence = self.estimate_confidence(
-                word.text
+            word.text = (
+                " ".join(word.text.split())
+                .strip()
             )
 
-            if word.text:
-                cleaned.append(word)
+            if not word.text:
+                continue
+
+            word.confidence = max(
+                word.confidence,
+                self.estimate_confidence(
+                    word.text
+                ),
+            )
+
+            cleaned.append(word)
 
         page.handwriting_words = cleaned
 
         self.remove_duplicates(page)
+
+        page.handwriting_words.sort(
+            key=lambda w: (
+                min(
+                    p[1]
+                    for p in w.bbox
+                ),
+                min(
+                    p[0]
+                    for p in w.bbox
+                ),
+            )
+        )
 
 
     def process_and_clean(
         self,
         page: Page,
     ) -> None:
-        """
-        Complete handwriting pipeline.
-        """
 
         self.process_page(page)
 
@@ -333,9 +546,6 @@ class HandwritingService:
     def export_words(
         page: Page,
     ) -> list[dict]:
-        """
-        Export handwriting results.
-        """
 
         return [
             {
@@ -346,36 +556,21 @@ class HandwritingService:
             }
             for word in page.handwriting_words
         ]
-
-
+        
     @staticmethod
     def _iou(
         bbox1: list[list[int]],
         bbox2: list[list[int]],
     ) -> float:
         """
-        Intersection over Union between two OCR boxes.
+        Intersection over Union between two bounding boxes.
         """
 
-        x1 = max(
-            bbox1[0][0],
-            bbox2[0][0],
-        )
+        x1 = max(bbox1[0][0], bbox2[0][0])
+        y1 = max(bbox1[0][1], bbox2[0][1])
 
-        y1 = max(
-            bbox1[0][1],
-            bbox2[0][1],
-        )
-
-        x2 = min(
-            bbox1[2][0],
-            bbox2[2][0],
-        )
-
-        y2 = min(
-            bbox1[2][1],
-            bbox2[2][1],
-        )
+        x2 = min(bbox1[2][0], bbox2[2][0])
+        y2 = min(bbox1[2][1], bbox2[2][1])
 
         if x2 <= x1 or y2 <= y1:
             return 0.0

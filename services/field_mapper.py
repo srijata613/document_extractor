@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from encodings import aliases
 import re
 from collections import defaultdict
 
@@ -30,8 +31,63 @@ class FieldMapper:
     MATCH_THRESHOLD = 88
 
     def __init__(self) -> None:
-
         self.schema = self._build_schema()
+
+    def _build_schema(self) -> dict[str, list[str]]:
+        return {
+            "Name": ["name", "full name", "candidate name", "patient name"],
+            "Date of Birth": ["dob", "date of birth", "birth date"],
+            "Age": ["age"],
+            "Gender": ["gender", "sex"],
+            "Email": ["email", "email address"],
+            "Mobile Number": [
+                "mobile",
+                "mobile number",
+                "phone",
+                "phone number",
+            ],
+            "Address": [
+                "address",
+                "home address",
+                "residential address",
+            ],
+            "Aadhaar Number": [
+                "aadhaar",
+                "aadhaar number",
+            ],
+            "PAN Number": [
+                "pan",
+                "pan number",
+            ],
+            "IFSC Code": [
+                "ifsc",
+                "ifsc code",
+            ],
+            "Bank Account Number": [
+                "account number",
+                "bank account",
+            ],
+            "Nationality": [
+                "nationality",
+            ],
+            "Category": [
+                "category",
+                "caste",
+            ],
+            "Occupation": [
+                "occupation",
+                "profession",
+                "job",
+            ],
+            "Company": [
+                "company",
+                "organization",
+            ],
+            "Signature": [
+                "signature",
+                "signed by",
+            ],
+        }
 
     def map_document(
         self,
@@ -62,7 +118,16 @@ class FieldMapper:
         best = None
         best_score = 0
 
-        for canonical in self.schema:
+        for canonical, aliases in self.schema.items():
+            for alias in aliases:
+                score = fuzz.ratio(
+                    field_name,
+                    alias.lower(),
+                )
+
+                if score > best_score:
+                    best_score = score
+                    best = canonical
 
             score = fuzz.ratio(
                 field_name,
@@ -70,7 +135,6 @@ class FieldMapper:
             )
 
             if score > best_score:
-
                 best_score = score
                 best = canonical
 

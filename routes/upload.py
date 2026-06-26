@@ -11,7 +11,10 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 
-from config.settings import settings
+from config import (
+    UPLOAD_DIR,
+    OUTPUT_DIR,
+)
 from services.pipeline import (
     PipelineError,
     document_pipeline,
@@ -20,7 +23,7 @@ from utils.logger import app_logger
 from uuid import uuid4
 
 
-router = APIRouter(
+upload_router = APIRouter(
     prefix="/upload",
     tags=["Document Extraction"],
 )
@@ -83,7 +86,7 @@ async def _validate_size(
     await file.seek(0)
 
 
-@router.post(
+@upload_router.post(
     "/",
     response_class=FileResponse,
 )
@@ -107,11 +110,11 @@ async def upload_document(
     )
 
     uploads = Path(
-        settings.UPLOAD_DIRECTORY
+        UPLOAD_DIR
     )
 
     outputs = Path(
-        settings.OUTPUT_DIRECTORY
+        OUTPUT_DIR
     )
 
     uploads.mkdir(
@@ -147,7 +150,6 @@ async def upload_document(
     )
 
     try:
-
         excel = document_pipeline.process(
             input_path,
             outputs,
@@ -159,14 +161,24 @@ async def upload_document(
         )
 
     except PipelineError as exc:
-
         raise HTTPException(
-
             status_code=500,
-
             detail=str(exc),
-
         ) from exc
+
+    finally:
+        try:
+            if input_path.exists():
+                input_path.unlink()
+
+                app_logger.info(
+                    f"Deleted uploaded file: {input_path}"
+                )
+
+        except Exception as exc:
+            app_logger.warning(
+                f"Unable to delete uploaded file: {exc}"
+            )
 
     return FileResponse(
         excel,

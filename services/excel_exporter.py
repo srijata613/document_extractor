@@ -292,3 +292,58 @@ class ExcelExporter:
             mapped_fields,
             output,
         )
+        
+    def _format_sheet(
+        self,
+        sheet,
+    ) -> None:
+
+        for cell in sheet[1]:
+
+            cell.fill = self.HEADER_FILL
+
+            cell.font = self.HEADER_FONT
+
+            cell.border = self.THIN_BORDER
+
+            cell.alignment = self.HEADER_ALIGNMENT
+
+        for row in sheet.iter_rows(
+            min_row=2,
+        ):
+
+            for cell in row:
+
+                cell.border = self.THIN_BORDER
+
+                cell.alignment = self.CELL_ALIGNMENT
+
+        sheet.freeze_panes = "A2"
+
+        sheet.auto_filter.ref = sheet.dimensions
+
+    @staticmethod
+    def _autosize_columns(
+        sheet,
+    ) -> None:
+        for column_cells in sheet.columns:
+
+            length = max(
+                len(str(cell.value))
+                if cell.value is not None
+                else 0
+
+                for cell in column_cells
+            )
+
+            letter = get_column_letter(
+                column_cells[0].column
+            )
+            sheet.column_dimensions[
+                letter
+            ].width = min(
+                max(length + 3, 15),
+                60,
+            )
+            
+excel_exporter = ExcelExporter()
