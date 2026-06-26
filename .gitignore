@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# Python Packaging
+build/
+dist/
+*.egg-info/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+
+# Temporary Files
+temp/*
+!temp/.gitkeep
+
+uploads/*
+!uploads/.gitkeep
+
+output/*
+!output/.gitkeep
+
+# Cache
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OCR Models Cache
+.paddleocr/
+.huggingface/
+
+# Generated Images
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+
+# Exceptions
+!static/*.png
